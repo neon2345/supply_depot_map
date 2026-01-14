@@ -311,7 +311,7 @@
     if (Object.keys(bySpu).length > 0) {
       tableHtml = '<div style="font-size:13px;line-height:1.6;"><b>当前筛选下供应情况：</b></div>' +
         '<table style="border-collapse:collapse;font-size:12px;margin-top:2px;">' +
-        '<tr><th style="border:1px solid #ccc;padding:2px 4px;">BOM</th>' +
+        '<tr><th style="border:1px solid #ccc;padding:2px 4px;">SPU</th>' +
         '<th style="border:1px solid #ccc;padding:2px 4px;">供应配额</th></tr>';
       Object.values(bySpu).forEach(r => {
         const spuLabel = r.spu_name ? `${r.spu_name} (${r.spu_id})` : r.spu_id;
@@ -359,7 +359,7 @@
     if (Object.keys(bySpu).length > 0) {
       tableHtml = '<div style="font-size:13px;line-height:1.6;"><b>当前筛选下需求情况：</b></div>' +
         '<table style="border-collapse:collapse;font-size:12px;margin-top:2px;">' +
-        '<tr><th style="border:1px solid #ccc;padding:2px 4px;">BOM</th>' +
+        '<tr><th style="border:1px solid #ccc;padding:2px 4px;">SPU</th>' +
         '<th style="border:1px solid #ccc;padding:2px 4px;">需求配额</th></tr>';
       Object.values(bySpu).forEach(r => {
         const spuLabel = r.spu_name ? `${r.spu_name} (${r.spu_id})` : r.spu_id;
@@ -481,7 +481,7 @@
     const totalEdgeQty = spuList.reduce((sum, r) => sum + r.quantity, 0);
 
     let tableHtml = '<table style="border-collapse:collapse;font-size:12px;">' +
-      '<tr><th style="border:1px solid #ccc;padding:2px 4px;">BOM</th>' +
+      '<tr><th style="border:1px solid #ccc;padding:2px 4px;">SPU</th>' +
       '<th style="border:1px solid #ccc;padding:2px 4px;">配额</th>' +
       '<th style="border:1px solid #ccc;padding:2px 4px;">距离/km</th></tr>';
     spuList.forEach(r => {
