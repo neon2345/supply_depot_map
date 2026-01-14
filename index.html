@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>仓供关系可视化</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; }
+    #container { width:100%; height:100%; position:relative; }
+    #sidebar {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      width: 320px;
+      max-height: 70vh;
+      background: rgba(255,255,255,0.95);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(0,0,0,0.1);
+      border-radius: 12px;
+      padding: 15px;
+      box-sizing: border-box;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+      overflow-y: auto;
+      z-index: 1000;
+    }
+    #sidebar::-webkit-scrollbar {
+      width: 6px;
+    }
+    #sidebar::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 3px;
+    }
+    #sidebar::-webkit-scrollbar-thumb {
+      background: #c1c1c1;
+      border-radius: 3px;
+    }
+    #sidebar::-webkit-scrollbar-thumb:hover {
+      background: #a8a8a8;
+    }
+    #map { width:100%; height:100%; }
+    .control-group {
+      margin-bottom: 12px;
+    }
+    .control-group label {
+      display: block;
+      font-weight: 600;
+      color: #495057;
+      font-size: 13px;
+      margin-bottom: 4px;
+    }
+    select {
+      width: 100%;
+      padding: 6px 8px;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      font-size: 12px;
+      background: white;
+      transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+      margin: 0;
+    }
+    select:focus {
+      outline: 0;
+      border-color: #80bdff;
+      box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+    }
+    .info-panel {
+      background: rgba(255,255,255,0.8);
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin-bottom: 10px;
+      font-size: 12px;
+      color: #495057;
+      border: 1px solid #dee2e6;
+    }
+    .details-panel {
+      background: rgba(255,255,255,0.8);
+      border-radius: 6px;
+      border: 1px solid #dee2e6;
+      overflow: hidden;
+      max-height: 40%;
+    }
+    .details-panel > div:first-child {
+      background: #f8f9fa;
+      padding: 8px 10px;
+      font-weight: 600;
+      font-size: 12px;
+      color: #495057;
+      border-bottom: 1px solid #dee2e6;
+    }
+    .marker {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      line-height: 20px;
+      text-align: center;
+      font-size: 12px;
+      font-weight: 600;
+      box-shadow: 0 0 6px rgba(0,0,0,0.35);
+      border: 2px solid #ffffff;
+    }
+    .marker-factory {
+      background: #ff7b1a;
+      color: #ffffff;
+    }
+    .marker-depot {
+      background: #0077ff;
+      color: #ffffff;
+    }
+    .marker-focus {
+      opacity: 1;
+      transform: scale(1.15);
+    }
+    .marker-dim {
+      opacity: 0.25;
+      transform: scale(0.9);
+    }
+  </style>
+  <script src="https://webapi.amap.com/maps?v=2.0&key=05274d5027e6b22978b2ade4630f3596"></script>
+</head>
+<body>
+<div id="container">
+  <div id="sidebar">
+    <div class="control-group">
+      <label>选择仓：</label>
+      <select id="depotSelect">
+        <option value="">全部</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>选择供应商：</label>
+      <select id="supplierSelect">
+        <option value="">全部</option>
+      </select>
+    </div>
+    <div class="control-group">
+      <label>选择SPU：</label>
+      <select id="spuSelect">
+        <option value="">全部</option>
+      </select>
+    </div>
+    <div class="info-panel" style="margin-top: 10px; background: rgba(255,255,255,0.9);">
+      💡 点击圆点和连线可查看详细信息
+    </div>
+    <div id="details" class="details-panel"></div>
+  </div>
+  <div id="map"></div>
+</div>
+
+<script>
+  let map, factoryMarkers = {}, depotMarkers = {};
+  let allEdges = [];
+  let byDepot = {}, bySupplier = {}, bySpu = {};
+  let currentEdges = [];  // 当前筛选下正在展示的边集合
+  // 元数据：用于展示"名称(id)"和信息窗内容
+  let depotMeta = {}, supplierMeta = {}, spuMeta = {}, factoryMeta = {};
+  let infoWindow;
+  let polylines = [];
+
+  function markerHtml(type, isFocus) {
+    const baseClass = type === 'factory' ? 'marker marker-factory' : 'marker marker-depot';
+    const stateClass = isFocus ? 'marker-focus' : 'marker-dim';
+    const label = type === 'factory' ? 'F' : 'D';
+    return `<div class="${baseClass} ${stateClass}">${label}</div>`;
+  }
+
+  function initMap() {
+    map = new AMap.Map('map', {
+      zoom: 5,
+      center: [105, 35]
+    });
+    infoWindow = new AMap.InfoWindow({
+      isCustom: false,
+      offset: new AMap.Pixel(0, -20)
+    });
+  }
+
+  async function loadData() {
+    // 假设 main.py 导出 JSON：[{spu_id, spu_name, factory_id, factory_lon, factory_lat, supplier_id, supplier_name,
+    //                           depot_id, depot_lon, depot_lat, quantity, distance_km}, ...]
+    const resp = await fetch('result_edges_all.json');
+    allEdges = await resp.json();
+
+    // 建索引
+    allEdges.forEach(e => {
+      // 仓索引
+      byDepot[e.depot_id] = byDepot[e.depot_id] || [];
+      byDepot[e.depot_id].push(e);
+      // 仓元数据
+      if (!depotMeta[e.depot_id]) {
+        depotMeta[e.depot_id] = { name: e.depot_name || '' };
+      }
+      // 工厂元数据（从供应方信息推断）
+      if (!factoryMeta[e.factory_id]) {
+        factoryMeta[e.factory_id] = {
+          factory_id: e.factory_id,
+          supplier_id: e.supplier_id || e.supply_id || '',
+          supplier_name: e.supplier_name || e.supply_name || '',
+          lon: e.factory_lon,
+          lat: e.factory_lat
+        };
+      }
+      // 供应商索引（兼容 supplier_id / supply_id 字段）
+      const supplierKey = e.supplier_id || e.supply_id;
+      if (supplierKey) {
+        bySupplier[supplierKey] = bySupplier[supplierKey] || [];
+        bySupplier[supplierKey].push(e);
+        if (!supplierMeta[supplierKey]) {
+          supplierMeta[supplierKey] = { name: e.supplier_name || e.supply_name || '' };
+        }
+      }
+      // SPU索引
+      bySpu[e.spu_id] = bySpu[e.spu_id] || [];
+      bySpu[e.spu_id].push(e);
+      if (!spuMeta[e.spu_id]) {
+        spuMeta[e.spu_id] = { name: e.spu_name || '' };
+      }
+    });
+
+    initSelectors();
+    drawBaseMarkers();
+  }
+
+  function initSelectors() {
+    const depotSelect = document.getElementById('depotSelect');
+    const supplierSelect = document.getElementById('supplierSelect');
+    const spuSelect = document.getElementById('spuSelect');
+
+    depotSelect.addEventListener('change', updateView);
+    supplierSelect.addEventListener('change', updateView);
+    spuSelect.addEventListener('change', updateView);
+
+    fillDepotOptions();
+    fillSupplierOptions();
+    fillSpuOptions();
+  }
+
+  function fillDepotOptions() {
+    const depotSelect = document.getElementById('depotSelect');
+    // 清除除了"全部"选项外的其他选项
+    depotSelect.innerHTML = '<option value="">全部</option>';
+
+    Object.keys(byDepot).sort().forEach(id => {
+      const opt = document.createElement('option');
+      opt.value = id;
+      const name = (depotMeta[id] && depotMeta[id].name) || '';
+      opt.textContent = name ? `${name} (${id})` : id;
+      depotSelect.appendChild(opt);
+    });
+  }
+
+  function fillSupplierOptions() {
+    const supplierSelect = document.getElementById('supplierSelect');
+    // 清除除了"全部"选项外的其他选项
+    supplierSelect.innerHTML = '<option value="">全部</option>';
+
+    // 过滤掉无效的供应商键（如空字符串或 'undefined'）
+    Object.keys(bySupplier).filter(id => id && id !== 'undefined').sort().forEach(id => {
+      const opt = document.createElement('option');
+      opt.value = id;
+      const name = (supplierMeta[id] && supplierMeta[id].name) || '';
+      opt.textContent = name ? `${name} (${id})` : id;
+      supplierSelect.appendChild(opt);
+    });
+  }
+
+  function fillSpuOptions() {
+    const spuSelect = document.getElementById('spuSelect');
+    // 清除除了"全部"选项外的其他选项
+    spuSelect.innerHTML = '<option value="">全部</option>';
+
+    Object.keys(bySpu).sort().forEach(id => {
+      const opt = document.createElement('option');
+      opt.value = id;
+      const name = (spuMeta[id] && spuMeta[id].name) || '';
+      opt.textContent = name ? `${name} (${id})` : id;
+      spuSelect.appendChild(opt);
+    });
+  }
+
+
+  function clearPolylines() {
+    polylines.forEach(p => map.remove(p));
+    polylines = [];
+  }
+
+  function openInfoWindowForFactory(factoryId, lnglat) {
+    const meta = factoryMeta[factoryId];
+    if (!meta) return;
+    const supplierLabel = meta.supplier_name ? `${meta.supplier_name} (${meta.supplier_id || ''})` : (meta.supplier_id || '');
+
+    // 在当前筛选条件下，该工厂的供应情况（基于 currentEdges）
+    const related = (currentEdges || []).filter(e => e.factory_id === factoryId);
+    let totalQty = 0;
+    const bySpu = {};
+    related.forEach(e => {
+      const sid = e.spu_id;
+      const qty = Number(e.quantity || 0);
+      totalQty += qty;
+      if (!sid) return;
+      if (!bySpu[sid]) {
+        bySpu[sid] = { spu_id: sid, spu_name: e.spu_name || '', quantity: 0 };
+      }
+      bySpu[sid].quantity += qty;
+    });
+
+    // 计算当前筛选结果的总供应量
+    const totalFilteredQty = (currentEdges || []).reduce((sum, e) => sum + Number(e.quantity || 0), 0);
+    const factoryPercentage = totalFilteredQty > 0 ? ((totalQty / totalFilteredQty) * 100).toFixed(2) : '0.00';
+
+    let tableHtml = '';
+    if (Object.keys(bySpu).length > 0) {
+      tableHtml = '<div style="font-size:13px;line-height:1.6;"><b>当前筛选下供应情况：</b></div>' +
+        '<table style="border-collapse:collapse;font-size:12px;margin-top:2px;">' +
+        '<tr><th style="border:1px solid #ccc;padding:2px 4px;">BOM</th>' +
+        '<th style="border:1px solid #ccc;padding:2px 4px;">供应配额</th></tr>';
+      Object.values(bySpu).forEach(r => {
+        const spuLabel = r.spu_name ? `${r.spu_name} (${r.spu_id})` : r.spu_id;
+        const percentage = totalQty > 0 ? ((r.quantity ) * 100).toFixed(2) : '0.00';
+        tableHtml += `<tr>
+          <td style="border:1px solid #ccc;padding:2px 4px;">${spuLabel}</td>
+          <td style="border:1px solid #ccc;padding:2px 4px;text-align:right;">${percentage}%</td>
+        </tr>`;
+      });
+      tableHtml += '</table>';
+    }
+
+    const html =
+      `<div style="font-size:13px;line-height:1.6;">
+         <div><b>供应商：</b>${supplierLabel}</div>
+         <div><b>供应工厂：</b>${factoryId}</div>
+       </div>` + tableHtml;
+    infoWindow.setContent(html);
+    infoWindow.open(map, lnglat);
+  }
+
+  function openInfoWindowForDepot(depotId, lnglat) {
+    const meta = depotMeta[depotId] || {};
+    const name = meta.name || '';
+    // 当前筛选条件下，该仓的需求（即被分配的总量）
+    const related = (currentEdges || []).filter(e => e.depot_id === depotId);
+    let totalQty = 0;
+    const bySpu = {};
+    related.forEach(e => {
+      const sid = e.spu_id;
+      const qty = Number(e.quantity || 0);
+      totalQty += qty;
+      if (!sid) return;
+      if (!bySpu[sid]) {
+        bySpu[sid] = { spu_id: sid, spu_name: e.spu_name || '', quantity: 0 };
+      }
+      bySpu[sid].quantity += qty;
+    });
+
+    // 计算当前筛选结果的总需求量
+    const totalFilteredQty = (currentEdges || []).reduce((sum, e) => sum + Number(e.quantity || 0), 0);
+    const depotPercentage = totalFilteredQty > 0 ? ((totalQty / totalFilteredQty) * 100).toFixed(2) : '0.00';
+
+    let tableHtml = '';
+    if (Object.keys(bySpu).length > 0) {
+      tableHtml = '<div style="font-size:13px;line-height:1.6;"><b>当前筛选下需求情况：</b></div>' +
+        '<table style="border-collapse:collapse;font-size:12px;margin-top:2px;">' +
+        '<tr><th style="border:1px solid #ccc;padding:2px 4px;">BOM</th>' +
+        '<th style="border:1px solid #ccc;padding:2px 4px;">需求配额</th></tr>';
+      Object.values(bySpu).forEach(r => {
+        const spuLabel = r.spu_name ? `${r.spu_name} (${r.spu_id})` : r.spu_id;
+        const percentage = totalQty > 0 ? ((r.quantity ) * 100).toFixed(2) : '0.00';
+        tableHtml += `<tr>
+          <td style="border:1px solid #ccc;padding:2px 4px;">${spuLabel}</td>
+          <td style="border:1px solid #ccc;padding:2px 4px;text-align:right;">${percentage}%</td>
+        </tr>`;
+      });
+      tableHtml += '</table>';
+    }
+
+    const html =
+      `<div style="font-size:13px;line-height:1.6;">
+         <div><b>需求仓库：</b>${name ? name + ' ' : ''}(${depotId})</div>
+       </div>` + tableHtml;
+    infoWindow.setContent(html);
+    infoWindow.open(map, lnglat);
+  }
+
+  function renderDetails(depotId, supplierId, spuId, edges) {
+    const container = document.getElementById('details');
+    if (!container) return;
+
+    if (!edges || !edges.length) {
+      container.innerHTML = '';
+      return;
+    }
+
+    let title = '筛选结果';
+    const filters = [];
+    if (depotId) {
+      const meta = depotMeta[depotId] || {};
+      const name = meta.name || '';
+      filters.push(`仓：${name ? name + ' ' : ''}(${depotId})`);
+    }
+    if (supplierId) {
+      const meta = supplierMeta[supplierId] || {};
+      const name = meta.name || '';
+      filters.push(`供应商：${name ? name + ' ' : ''}(${supplierId})`);
+    }
+    if (spuId) {
+      const meta = spuMeta[spuId] || {};
+      const name = meta.name || '';
+      filters.push(`SPU：${name ? name + ' ' : ''}(${spuId})`);
+    }
+    if (filters.length > 0) {
+      title += `（${filters.join('，')}）`;
+    }
+
+    // 计算当前筛选结果的总数量
+    const totalFilteredQty = edges.reduce((sum, e) => sum + Number(e.quantity || 0), 0);
+
+    // 明细表：一行一条工厂->仓->SPU 的履约记录
+    let html = `<div style="font-weight:600;margin-bottom:4px;">${title}</div>`;
+    html += '<table style="border-collapse:collapse;width:100%;">' +
+      '<thead><tr>' +
+      '<th style="border:1px solid #ccc;padding:2px 4px;">工厂/供应商</th>' +
+      '<th style="border:1px solid #ccc;padding:2px 4px;">仓库</th>' +
+      '<th style="border:1px solid #ccc;padding:2px 4px;">SPU</th>' +
+      '<th style="border:1px solid #ccc;padding:2px 4px;">数量占比</th>' +
+      '<th style="border:1px solid #ccc;padding:2px 4px;">距离(公里)</th>' +
+      '</tr></thead><tbody>';
+
+    edges.forEach(e => {
+      const supplierId = e.supplier_id || e.supply_id || '';
+      const supplierName = e.supplier_name || e.supply_name || '';
+      const factoryLabel = supplierName
+        ? `${supplierName} (${supplierId || ''}/${e.factory_id})`
+        : (supplierId ? `${supplierId}/${e.factory_id}` : e.factory_id);
+
+      const depotLabel = (e.depot_name ? e.depot_name + ' ' : '') + `(${e.depot_id})`;
+      const spuLabel = (e.spu_name ? e.spu_name + ' ' : '') + `(${e.spu_id})`;
+      const qty = Number(e.quantity || 0);
+      const percentage = totalFilteredQty > 0 ? ((qty / totalFilteredQty) * 100).toFixed(2) : '0.00';
+      const dist = e.distance_km != null ? Number(e.distance_km).toFixed(2) : '-';
+
+      html += `<tr>
+        <td style="border:1px solid #ccc;padding:2px 4px;">${factoryLabel}</td>
+        <td style="border:1px solid #ccc;padding:2px 4px;">${depotLabel}</td>
+        <td style="border:1px solid #ccc;padding:2px 4px;">${spuLabel}</td>
+        <td style="border:1px solid #ccc;padding:2px 4px;text-align:right;">${percentage}%</td>
+        <td style="border:1px solid #ccc;padding:2px 4px;text-align:right;">${dist}</td>
+      </tr>`;
+    });
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  }
+
+  function openInfoWindowForEdge(factoryId, depotId, lnglat) {
+    // 聚合该工厂->仓库的所有SPU履约关系
+    const related = allEdges.filter(e => e.factory_id === factoryId && e.depot_id === depotId);
+    if (!related.length) return;
+
+    const rows = {};
+    related.forEach(e => {
+      const sid = e.spu_id;
+      if (!sid) return;
+      if (!rows[sid]) {
+        rows[sid] = {
+          spu_id: sid,
+          spu_name: e.spu_name || '',
+          quantity: 0,
+          distance_km: e.distance_km || null
+        };
+      }
+      rows[sid].quantity += Number(e.quantity || 0);
+      // 如果有距离信息，保留第一条
+      if (rows[sid].distance_km == null && e.distance_km != null) {
+        rows[sid].distance_km = e.distance_km;
+      }
+    });
+
+    const spuList = Object.values(rows);
+    if (!spuList.length) return;
+
+    // 计算该工厂供应给该仓库的总数量
+    const totalEdgeQty = spuList.reduce((sum, r) => sum + r.quantity, 0);
+
+    let tableHtml = '<table style="border-collapse:collapse;font-size:12px;">' +
+      '<tr><th style="border:1px solid #ccc;padding:2px 4px;">BOM</th>' +
+      '<th style="border:1px solid #ccc;padding:2px 4px;">配额</th>' +
+      '<th style="border:1px solid #ccc;padding:2px 4px;">距离/km</th></tr>';
+    spuList.forEach(r => {
+      const spuLabel = r.spu_name ? `${r.spu_name} (${r.spu_id})` : r.spu_id;
+      const percentage = totalEdgeQty > 0 ? ((r.quantity ) * 100).toFixed(2) : '0.00';
+      tableHtml += `<tr>
+        <td style="border:1px solid #ccc;padding:2px 4px;">${spuLabel}</td>
+        <td style="border:1px solid #ccc;padding:2px 4px;text-align:right;">${percentage}%</td>
+        <td style="border:1px solid #ccc;padding:2px 4px;text-align:right;">${r.distance_km != null ? r.distance_km.toFixed(2) : '-'}</td>
+      </tr>`;
+    });
+    tableHtml += '</table>';
+
+    const titleFactory = factoryMeta[factoryId] || {};
+    const supplierLabel = titleFactory.supplier_name
+      ? `${titleFactory.supplier_name} (${titleFactory.supplier_id || ''})`
+      : (titleFactory.supplier_id || '');
+
+    const titleDepot = depotMeta[depotId] || {};
+    const depotName = titleDepot.name || '';
+
+    const headerHtml = `<div style="margin-bottom:4px;font-size:13px;line-height:1.6;">
+        ${supplierLabel ? `<div><b>供应商：</b>${supplierLabel}</div>` : ''}
+        <div><b>需求仓库：</b>${depotName ? depotName + ' ' : ''}(${depotId})</div>
+      </div>`;
+
+    infoWindow.setContent(headerHtml + tableHtml);
+    infoWindow.open(map, lnglat);
+  }
+
+  function updateMarkerStyles(focusFactoryIds, focusDepotIds) {
+    // 高亮选中相关的工厂和仓库，其余淡化
+    Object.entries(factoryMarkers).forEach(([fid, marker]) => {
+      const isFocus = focusFactoryIds.has(fid);
+      marker.setContent(markerHtml('factory', isFocus));
+    });
+
+    Object.entries(depotMarkers).forEach(([did, marker]) => {
+      const isFocus = focusDepotIds.has(did);
+      marker.setContent(markerHtml('depot', isFocus));
+    });
+  }
+
+  function drawBaseMarkers() {
+    const factorySeen = new Set();
+    const depotSeen = new Set();
+
+    allEdges.forEach(e => {
+      if (!factorySeen.has(e.factory_id)) {
+        const marker = new AMap.Marker({
+          position: [e.factory_lon, e.factory_lat],
+          content: markerHtml('factory', true),
+          anchor: 'center'
+        });
+        marker.setMap(map);
+        factoryMarkers[e.factory_id] = marker;
+        // 点击工厂点显示信息
+        marker.on('click', function (ev) {
+          openInfoWindowForFactory(e.factory_id, ev.lnglat);
+        });
+        factorySeen.add(e.factory_id);
+      }
+      if (!depotSeen.has(e.depot_id)) {
+        const marker = new AMap.Marker({
+          position: [e.depot_lon, e.depot_lat],
+          content: markerHtml('depot', true),
+          anchor: 'center'
+        });
+        marker.setMap(map);
+        depotMarkers[e.depot_id] = marker;
+        // 点击仓库点显示信息
+        marker.on('click', function (ev) {
+          openInfoWindowForDepot(e.depot_id, ev.lnglat);
+        });
+        depotSeen.add(e.depot_id);
+      }
+    });
+  }
+
+  function updateView() {
+    clearPolylines();
+    // 每次筛选变化时，重置地图视野到初始状态
+    map.setZoom(5);
+    map.setCenter([105, 35]);
+    const depotSelect = document.getElementById('depotSelect');
+    const supplierSelect = document.getElementById('supplierSelect');
+    const spuSelect = document.getElementById('spuSelect');
+
+    const depotId = depotSelect.value;
+    const supplierId = supplierSelect.value;
+    const spuId = spuSelect.value;
+
+    // 从所有边开始筛选
+    let edges = allEdges.slice();
+
+    // 交叉筛选
+    if (depotId) {
+      edges = edges.filter(e => e.depot_id === depotId);
+    }
+    if (supplierId) {
+      edges = edges.filter(e => (e.supplier_id || e.supply_id) === supplierId);
+    }
+    if (spuId) {
+      edges = edges.filter(e => e.spu_id === spuId);
+    }
+
+    // 记录当前正在展示的边，用于点位信息中的“筛选信息”
+    currentEdges = edges.slice();
+
+    const bounds = [];
+    const focusFactoryIds = new Set();
+    const focusDepotIds = new Set();
+
+    // 按工厂-仓库聚合，单条线代表一对工厂-仓库，线宽可按总量加粗
+    const groupMap = {};
+    edges.forEach(e => {
+      const key = `${e.factory_id}||${e.depot_id}`;
+      if (!groupMap[key]) {
+        groupMap[key] = { edge: e, edges: [] };
+      }
+      groupMap[key].edges.push(e);
+    });
+
+    Object.values(groupMap).forEach(group => {
+      const e0 = group.edge;
+      const start = [e0.factory_lon, e0.factory_lat];
+      const end = [e0.depot_lon, e0.depot_lat];
+      const color = '#00aa00';
+      const totalQty = group.edges.reduce((s, x) => s + Number(x.quantity || 0), 0);
+      // 基础线宽 + 按数量缓慢放大
+      const strokeWeight = Math.min(15, 5 + Math.log10(totalQty + 1) * 3);
+
+      const line = new AMap.Polyline({
+        path: [start, end],
+        strokeColor: color,
+        strokeWeight: strokeWeight,
+        strokeOpacity: 0.8,
+        showDir: true  // 在线中段显示箭头
+      });
+      line.setMap(map);
+      polylines.push(line);
+      bounds.push(start, end);
+      focusFactoryIds.add(e0.factory_id);
+      focusDepotIds.add(e0.depot_id);
+
+      // 点击线，展示该工厂->仓库的所有SPU履约关系
+      line.on('click', function () {
+        // 中点坐标
+        const midLng = (start[0] + end[0]) / 2;
+        const midLat = (start[1] + end[1]) / 2;
+        openInfoWindowForEdge(e0.factory_id, e0.depot_id, [midLng, midLat]);
+      });
+    });
+
+    // 更新点样式，高亮当前视角涉及的工厂和仓库
+    updateMarkerStyles(focusFactoryIds, focusDepotIds);
+
+    if (bounds.length) {
+      map.setFitView(bounds);
+    }
+
+    renderDetails(depotId, supplierId, spuId, edges);
+  }
+
+  initMap();
+  loadData();
+</script>
+</body>
+</html>
