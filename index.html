@@ -121,6 +121,13 @@
 <div id="container">
   <div id="sidebar">
     <div class="control-group">
+      <label>数据源：</label>
+      <select id="dataSourceSelect">
+        <option value="opt">优化结果</option>
+        <option value="now">现状</option>
+      </select>
+    </div>
+    <div class="control-group">
       <label>选择仓：</label>
       <select id="depotSelect">
         <option value="">全部</option>
@@ -149,6 +156,8 @@
 <script>
   let map, factoryMarkers = {}, depotMarkers = {};
   let allEdges = [];
+  let edgesNow = [];   // 现状数据
+  let edgesOpt = [];   // 优化结果数据
   let byDepot = {}, bySupplier = {}, bySpu = {};
   let currentEdges = [];  // 当前筛选下正在展示的边集合
   // 元数据：用于展示"名称(id)"和信息窗内容
@@ -174,57 +183,72 @@
     });
   }
 
-  async function loadData() {
-    // 假设 main.py 导出 JSON：[{spu_id, spu_name, factory_id, factory_lon, factory_lat, supplier_id, supplier_name,
-    //                           depot_id, depot_lon, depot_lat, quantity, distance_km}, ...]
-    const resp = await fetch('result_edges_all.json');
-    allEdges = await resp.json();
-
-    // 建索引
-    allEdges.forEach(e => {
-      // 仓索引
+  function buildIndexes(edges) {
+    byDepot = {}; bySupplier = {}; bySpu = {};
+    depotMeta = {}; supplierMeta = {}; spuMeta = {}; factoryMeta = {};
+    edges.forEach(e => {
       byDepot[e.depot_id] = byDepot[e.depot_id] || [];
       byDepot[e.depot_id].push(e);
-      // 仓元数据
-      if (!depotMeta[e.depot_id]) {
-        depotMeta[e.depot_id] = { name: e.depot_name || '' };
-      }
-      // 工厂元数据（从供应方信息推断）
+      if (!depotMeta[e.depot_id]) depotMeta[e.depot_id] = { name: e.depot_name || '' };
       if (!factoryMeta[e.factory_id]) {
         factoryMeta[e.factory_id] = {
           factory_id: e.factory_id,
           supplier_id: e.supplier_id || e.supply_id || '',
           supplier_name: e.supplier_name || e.supply_name || '',
-          lon: e.factory_lon,
-          lat: e.factory_lat
+          lon: e.factory_lon, lat: e.factory_lat
         };
       }
-      // 供应商索引（兼容 supplier_id / supply_id 字段）
       const supplierKey = e.supplier_id || e.supply_id;
       if (supplierKey) {
         bySupplier[supplierKey] = bySupplier[supplierKey] || [];
         bySupplier[supplierKey].push(e);
-        if (!supplierMeta[supplierKey]) {
-          supplierMeta[supplierKey] = { name: e.supplier_name || e.supply_name || '' };
-        }
+        if (!supplierMeta[supplierKey]) supplierMeta[supplierKey] = { name: e.supplier_name || e.supply_name || '' };
       }
-      // SPU索引
       bySpu[e.spu_id] = bySpu[e.spu_id] || [];
       bySpu[e.spu_id].push(e);
-      if (!spuMeta[e.spu_id]) {
-        spuMeta[e.spu_id] = { name: e.spu_name || '' };
-      }
+      if (!spuMeta[e.spu_id]) spuMeta[e.spu_id] = { name: e.spu_name || '' };
     });
+  }
 
+  function switchDataSource() {
+    const val = document.getElementById('dataSourceSelect').value;
+    allEdges = val === 'now' ? edgesNow : edgesOpt;
+    buildIndexes(allEdges);
+    fillDepotOptions();
+    fillSupplierOptions();
+    fillSpuOptions();
+    document.getElementById('depotSelect').value = '';
+    document.getElementById('supplierSelect').value = '';
+    document.getElementById('spuSelect').value = '';
+    clearMarkers();
+    drawBaseMarkers();
+    updateView();
+  }
+
+  async function loadData() {
+    try {
+      const [respOpt, respNow] = await Promise.all([
+        fetch('output/result_edges_all.json'),
+        fetch('output/result_edges_now.json')
+      ]);
+      edgesOpt = respOpt.ok ? await respOpt.json() : [];
+      edgesNow = respNow.ok ? await respNow.json() : [];
+    } catch (e) {
+      edgesOpt = []; edgesNow = [];
+    }
+    allEdges = edgesOpt;
+    buildIndexes(allEdges);
     initSelectors();
     drawBaseMarkers();
   }
 
   function initSelectors() {
+    const dataSourceSelect = document.getElementById('dataSourceSelect');
     const depotSelect = document.getElementById('depotSelect');
     const supplierSelect = document.getElementById('supplierSelect');
     const spuSelect = document.getElementById('spuSelect');
 
+    if (dataSourceSelect) dataSourceSelect.addEventListener('change', switchDataSource);
     depotSelect.addEventListener('change', updateView);
     supplierSelect.addEventListener('change', updateView);
     spuSelect.addEventListener('change', updateView);
@@ -311,7 +335,7 @@
     if (Object.keys(bySpu).length > 0) {
       tableHtml = '<div style="font-size:13px;line-height:1.6;"><b>当前筛选下供应情况：</b></div>' +
         '<table style="border-collapse:collapse;font-size:12px;margin-top:2px;">' +
-        '<tr><th style="border:1px solid #ccc;padding:2px 4px;">SPU</th>' +
+        '<tr><th style="border:1px solid #ccc;padding:2px 4px;">BOM</th>' +
         '<th style="border:1px solid #ccc;padding:2px 4px;">供应配额</th></tr>';
       Object.values(bySpu).forEach(r => {
         const spuLabel = r.spu_name ? `${r.spu_name} (${r.spu_id})` : r.spu_id;
@@ -359,7 +383,7 @@
     if (Object.keys(bySpu).length > 0) {
       tableHtml = '<div style="font-size:13px;line-height:1.6;"><b>当前筛选下需求情况：</b></div>' +
         '<table style="border-collapse:collapse;font-size:12px;margin-top:2px;">' +
-        '<tr><th style="border:1px solid #ccc;padding:2px 4px;">SPU</th>' +
+        '<tr><th style="border:1px solid #ccc;padding:2px 4px;">BOM</th>' +
         '<th style="border:1px solid #ccc;padding:2px 4px;">需求配额</th></tr>';
       Object.values(bySpu).forEach(r => {
         const spuLabel = r.spu_name ? `${r.spu_name} (${r.spu_id})` : r.spu_id;
@@ -389,7 +413,8 @@
       return;
     }
 
-    let title = '筛选结果';
+    const dataLabel = document.getElementById('dataSourceSelect')?.value === 'now' ? '现状' : '优化结果';
+    let title = `筛选结果（${dataLabel}）`;
     const filters = [];
     if (depotId) {
       const meta = depotMeta[depotId] || {};
@@ -481,7 +506,7 @@
     const totalEdgeQty = spuList.reduce((sum, r) => sum + r.quantity, 0);
 
     let tableHtml = '<table style="border-collapse:collapse;font-size:12px;">' +
-      '<tr><th style="border:1px solid #ccc;padding:2px 4px;">SPU</th>' +
+      '<tr><th style="border:1px solid #ccc;padding:2px 4px;">BOM</th>' +
       '<th style="border:1px solid #ccc;padding:2px 4px;">配额</th>' +
       '<th style="border:1px solid #ccc;padding:2px 4px;">距离/km</th></tr>';
     spuList.forEach(r => {
@@ -510,6 +535,13 @@
 
     infoWindow.setContent(headerHtml + tableHtml);
     infoWindow.open(map, lnglat);
+  }
+
+  function clearMarkers() {
+    Object.values(factoryMarkers).forEach(m => map.remove(m));
+    Object.values(depotMarkers).forEach(m => map.remove(m));
+    factoryMarkers = {};
+    depotMarkers = {};
   }
 
   function updateMarkerStyles(focusFactoryIds, focusDepotIds) {
