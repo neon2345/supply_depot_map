@@ -228,8 +228,8 @@
   async function loadData() {
     try {
       const [respOpt, respNow] = await Promise.all([
-        fetch('output/result_edges_all.json'),
-        fetch('output/result_edges_now.json')
+        fetch('result_edges_all.json'),
+        fetch('result_edges_now.json')
       ]);
       edgesOpt = respOpt.ok ? await respOpt.json() : [];
       edgesNow = respNow.ok ? await respNow.json() : [];
